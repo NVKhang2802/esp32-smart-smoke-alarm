@@ -1,0 +1,970 @@
+[
+  {
+    "id": "tab_middleware_smoke",
+    "type": "tab",
+    "label": "Tầng 3 - Middleware Automation Engine (Tuần 7: Business Rules & Abnormal)",
+    "disabled": false,
+    "info": "Middleware Engine xử lý dữ liệu cho Hệ thống báo khói cảnh báo sớm (Tuần 7: Business Rules & Abnormal Scenarios).\nBao gồm 5 Business Rules, 4 Kịch bản sự cố bất thường, Offline Buffer Replay, Watchdog 30s, Dynamic Day/Night Scheduler và Cross-Zone Emergency Automation."
+  },
+  {
+    "id": "broker_emqx_cloud",
+    "type": "mqtt-broker",
+    "name": "EMQX Public Broker",
+    "broker": "broker.emqx.io",
+    "port": "1883",
+    "clientid": "NodeRED_Smoke_Middleware_N09",
+    "autoConnect": true,
+    "usetls": false,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true,
+    "autoUnsubscribe": true,
+    "birthTopic": "Nhom09/smoke/middleware/status",
+    "birthQos": "1",
+    "birthRetain": "true",
+    "birthPayload": "{\"middleware\": \"ONLINE\", \"version\": \"3.0.0\", \"milestone\": \"WEEK7_BUSINESS_RULES_ABNORMAL\"}",
+    "closeTopic": "Nhom09/smoke/middleware/status",
+    "closeQos": "1",
+    "closeRetain": "true",
+    "closePayload": "{\"middleware\": \"OFFLINE\"}",
+    "willTopic": "Nhom09/smoke/middleware/status",
+    "willQos": "1",
+    "willRetain": "true",
+    "willPayload": "{\"middleware\": \"CRASHED\"}"
+  },
+  {
+    "id": "mqtt_in_auth_req",
+    "type": "mqtt in",
+    "z": "tab_middleware_smoke",
+    "name": "Sub (1a): Nhom09/smoke/v2/auth/request",
+    "topic": "Nhom09/smoke/v2/auth/request",
+    "qos": "1",
+    "datatype": "auto-detect",
+    "broker": "broker_emqx_cloud",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "x": 170,
+    "y": 80,
+    "wires": [
+      [
+        "fn_auth_service"
+      ]
+    ]
+  },
+  {
+    "id": "fn_auth_service",
+    "type": "function",
+    "z": "tab_middleware_smoke",
+    "name": "Dịch vụ 1: Auth & Whitelist (1b, 1c)",
+    "func": "// Cơ sở dữ liệu Whitelist thiết bị được phép vào hệ thống\nconst WHITELIST = {\n    \"ESP32_SMOKE_N09_A01\": { \n        mac: \"24:6F:28:AB:CD:10\", \n        token: \"HUIT_IOT_SECURE_TOKEN_N09\", \n        topology: { building: \"HUIT_A\", floor: \"F03\", room: \"P302\", zone: \"Phòng Lab IoT\" }\n    },\n    \"ESP32_SMOKE_N09_A02\": { \n        mac: \"24:6F:28:AB:CD:20\", \n        token: \"HUIT_IOT_SECURE_TOKEN_N09\", \n        topology: { building: \"HUIT_A\", floor: \"F03\", room: \"P303\", zone: \"Kho Hóa Chất\" }\n    },\n    \"ESP32_SMOKE_N09_A03\": { \n        mac: \"24:6F:28:AB:CD:30\", \n        token: \"HUIT_IOT_SECURE_TOKEN_N09\", \n        topology: { building: \"HUIT_A\", floor: \"F03\", room: \"P304\", zone: \"Khu Vực Bếp\" }\n    }\n};\n\nlet data = msg.payload;\nif (typeof data === 'string') {\n    try { data = JSON.parse(data); } catch(e) { return null; }\n}\n\nlet devId = data.device_id || \"UNKNOWN\";\nlet devMac = data.mac_address || \"\";\nlet secret = data.secret_token || \"\";\n\nlet respTopic = \"Nhom09/smoke/v2/auth/response/\" + devId;\nlet respPayload = {};\nlet logEntry = null;\n\n// Kiểm tra tính hợp lệ trong Whitelist\nlet record = WHITELIST[devId];\nif (record && record.token === secret) {\n    let sessionKey = \"SK_\" + Math.random().toString(36).substr(2, 9).toUpperCase() + \"_N09\";\n    respPayload = {\n        msg_id: \"RESP-AUTH-\" + Date.now(),\n        status: \"PASS\",\n        status_code: 200,\n        session_key: sessionKey,\n        lease_duration_sec: 86400,\n        assigned_topology: record.topology,\n        config: {\n            telemetry_interval_ms: 2000,\n            keep_alive_interval_ms: 10000,\n            alarm_threshold_ppm: 400.0,\n            safe_threshold_ppm: 300.0\n        }\n    };\n\n    // Đăng ký vào bảng Device Fleet Registry\n    let fleet = flow.get(\"fleet\") || {};\n    let d = fleet[devId] || {\n        deviceId: devId,\n        deviceState: \"SAFE\",\n        effective: \"SAFE\",\n        tempHist: [],\n        alarmTh: 400,\n        safeTh: 300,\n        overActive: false,\n        hotActive: false,\n        cooldownStart: null,\n        lastAlert: 0,\n        rate: 0,\n        mq2Valid: true,\n        dhtValid: true,\n        hum: 60.0,\n        lastPpm: 0\n    };\n    d.mac = devMac;\n    d.zone = record.topology.zone;\n    d.topology = record.topology;\n    d.sessionKey = sessionKey;\n    d.status = \"ONLINE\";\n    d.lastSeen = Date.now();\n    fleet[devId] = d;\n    flow.set(\"fleet\", fleet);\n    flow.set(\"device_fleet\", fleet);\n\n    logEntry = { level: \"INFO\", event: \"AUTH_SUCCESS\", desc: `Xác thực thành công thiết bị ${devId} (${record.topology.zone})` };\n} else {\n    respPayload = {\n        msg_id: \"RESP-AUTH-\" + Date.now(),\n        status: \"REJECTED\",\n        status_code: 401,\n        error_code: \"ERR_UNAUTHORIZED_DEVICE\",\n        message: \"Device MAC or secret token is invalid.\"\n    };\n    logEntry = { level: \"WARN\", event: \"AUTH_REJECTED\", desc: `Từ chối xác thực thiết bị lạ: ID=${devId}, MAC=${devMac}` };\n}\n\nlet outMqtt = {\n    topic: respTopic,\n    payload: JSON.stringify(respPayload),\n    qos: 1\n};\n\nlet outLog = logEntry ? { payload: [logEntry] } : null;\n\nreturn [outMqtt, outLog];",
+    "outputs": 2,
+    "noerr": 0,
+    "x": 490,
+    "y": 80,
+    "wires": [
+      [
+        "mqtt_out_auth_resp"
+      ],
+      [
+        "fn_audit_logger"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_out_auth_resp",
+    "type": "mqtt out",
+    "z": "tab_middleware_smoke",
+    "name": "Pub (1d): Nhom09/smoke/v2/auth/response",
+    "topic": "",
+    "qos": "1",
+    "retain": "false",
+    "broker": "broker_emqx_cloud",
+    "x": 840,
+    "y": 80,
+    "wires": []
+  },
+  {
+    "id": "mqtt_in_telemetry_v1",
+    "type": "mqtt in",
+    "z": "tab_middleware_smoke",
+    "name": "Sub V1: Nhom09/smoke/telemetry",
+    "topic": "Nhom09/smoke/telemetry",
+    "qos": "0",
+    "datatype": "auto-detect",
+    "broker": "broker_emqx_cloud",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "x": 160,
+    "y": 160,
+    "wires": [
+      [
+        "fn_parse_telemetry"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_in_telemetry_v2",
+    "type": "mqtt in",
+    "z": "tab_middleware_smoke",
+    "name": "Sub (2a): Nhom09/smoke/v2/+/+/+/+/telemetry",
+    "topic": "Nhom09/smoke/v2/+/+/+/+/telemetry",
+    "qos": "0",
+    "datatype": "auto-detect",
+    "broker": "broker_emqx_cloud",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "x": 200,
+    "y": 220,
+    "wires": [
+      [
+        "fn_parse_telemetry"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_in_alarm_v1",
+    "type": "mqtt in",
+    "z": "tab_middleware_smoke",
+    "name": "Sub V1: Nhom09/smoke/event/alarm",
+    "topic": "Nhom09/smoke/event/alarm",
+    "qos": "1",
+    "datatype": "auto-detect",
+    "broker": "broker_emqx_cloud",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "x": 170,
+    "y": 280,
+    "wires": [
+      [
+        "fn_parse_alarm"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_in_alarm_v2",
+    "type": "mqtt in",
+    "z": "tab_middleware_smoke",
+    "name": "Sub (2a): Nhom09/smoke/v2/+/+/+/+/event/alarm",
+    "topic": "Nhom09/smoke/v2/+/+/+/+/event/alarm",
+    "qos": "1",
+    "datatype": "auto-detect",
+    "broker": "broker_emqx_cloud",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "x": 210,
+    "y": 340,
+    "wires": [
+      [
+        "fn_parse_alarm"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_in_history_sync",
+    "type": "mqtt in",
+    "z": "tab_middleware_smoke",
+    "name": "Sub (Abnormal 2): Nhom09/smoke/history/sync",
+    "topic": "Nhom09/smoke/history/sync",
+    "qos": "1",
+    "datatype": "auto-detect",
+    "broker": "broker_emqx_cloud",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "x": 200,
+    "y": 400,
+    "wires": [
+      [
+        "fn_parse_history_sync"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_in_keepalive_v1",
+    "type": "mqtt in",
+    "z": "tab_middleware_smoke",
+    "name": "Sub V1: Nhom09/smoke/keep_alive",
+    "topic": "Nhom09/smoke/keep_alive",
+    "qos": "0",
+    "datatype": "auto-detect",
+    "broker": "broker_emqx_cloud",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "x": 170,
+    "y": 460,
+    "wires": [
+      [
+        "fn_parse_keepalive"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_in_keepalive_v2",
+    "type": "mqtt in",
+    "z": "tab_middleware_smoke",
+    "name": "Sub (4a): Nhom09/smoke/v2/+/+/+/+/keep_alive",
+    "topic": "Nhom09/smoke/v2/+/+/+/+/keep_alive",
+    "qos": "0",
+    "datatype": "auto-detect",
+    "broker": "broker_emqx_cloud",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "x": 200,
+    "y": 510,
+    "wires": [
+      [
+        "fn_parse_keepalive"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_in_lwt",
+    "type": "mqtt in",
+    "z": "tab_middleware_smoke",
+    "name": "Sub: Nhom09/smoke/lwt",
+    "topic": "Nhom09/smoke/lwt",
+    "qos": "1",
+    "datatype": "auto-detect",
+    "broker": "broker_emqx_cloud",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "x": 130,
+    "y": 560,
+    "wires": [
+      [
+        "fn_parse_lwt"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_in_scheduler",
+    "type": "mqtt in",
+    "z": "tab_middleware_smoke",
+    "name": "Sub (Rule 3): Nhom09/smoke/cmd/scheduler",
+    "topic": "Nhom09/smoke/cmd/scheduler",
+    "qos": "1",
+    "datatype": "auto-detect",
+    "broker": "broker_emqx_cloud",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "x": 190,
+    "y": 610,
+    "wires": [
+      [
+        "fn_parse_scheduler"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_in_fault_injection",
+    "type": "mqtt in",
+    "z": "tab_middleware_smoke",
+    "name": "Sub (Fault Inject): Nhom09/smoke/cmd/inject_fault",
+    "topic": "Nhom09/smoke/cmd/inject_fault",
+    "qos": "1",
+    "datatype": "auto-detect",
+    "broker": "broker_emqx_cloud",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "x": 210,
+    "y": 660,
+    "wires": [
+      [
+        "fn_parse_fault_injection"
+      ]
+    ]
+  },
+  {
+    "id": "inject_watchdog_tick",
+    "type": "inject",
+    "z": "tab_middleware_smoke",
+    "name": "Watchdog 3s Tick (Abnormal 3)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "3",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 1,
+    "topic": "watchdog/tick",
+    "payload": "",
+    "payloadType": "date",
+    "x": 170,
+    "y": 710,
+    "wires": [
+      [
+        "fn_watchdog_scheduler"
+      ]
+    ]
+  },
+  {
+    "id": "fn_parse_telemetry",
+    "type": "function",
+    "z": "tab_middleware_smoke",
+    "name": "Parse & Validate Telemetry",
+    "func": "// functions/parse_telemetry.js\nlet d = msg.payload;\nif (typeof d === 'string') {\n  try {\n    d = JSON.parse(d);\n  } catch (e) {\n    return null;\n  }\n}\nif (!d || typeof d !== 'object') return null;\n\nconst num = v => (v === null || v === undefined) ? NaN : Number(v);\n\nmsg.eventType = 'TELEMETRY';\nmsg.deviceId  = d.device_id || 'ESP32_SMOKE_N09_A01';\nmsg.uptime    = d.uptime_s !== undefined ? d.uptime_s : d.uptime_sec;\nmsg.mq2Valid  = d.mq2_valid !== false;\nmsg.dhtValid  = d.dht_valid !== false;\nmsg.ppm       = num(d.mq2_ppm);\nmsg.temp      = num(d.temp);\nmsg.hum       = num(d.hum);\nmsg.fsmState  = d.fsm_state;\nmsg.alarmTh   = Number(d.alarm_th) || undefined;\nmsg.safeTh    = Number(d.safe_th) || undefined;\n\n// ---- DEDUP: TTL 5s ----\nif (msg.uptime !== undefined) {\n  const now = Date.now();\n  const cache = flow.get('dedup') || {};\n  for (const k in cache) {\n    if (now - cache[k] > 5000) delete cache[k];\n  }\n  const key = msg.deviceId + '|' + msg.eventType + '|' + (msg.eventName || '') + '|' + msg.uptime;\n  if (cache[key]) return null;\n  cache[key] = now;\n  flow.set('dedup', cache);\n}\n\nreturn msg;\n",
+    "outputs": 1,
+    "x": 520,
+    "y": 180,
+    "wires": [
+      [
+        "fn_core_fsm_engine"
+      ]
+    ]
+  },
+  {
+    "id": "fn_parse_alarm",
+    "type": "function",
+    "z": "tab_middleware_smoke",
+    "name": "Parse Urgent Alarm Event",
+    "func": "// nodered/functions/parse_alarm.js\nlet d = msg.payload;\nif (typeof d === 'string') {\n  try {\n    d = JSON.parse(d);\n  } catch (e) {\n    return null;\n  }\n}\nif (!d || typeof d !== 'object') return null;\n\nmsg.eventType = 'ALARM_EVENT';\nmsg.deviceId  = d.device_id || 'ESP32_SMOKE_N09_A01';\nmsg.eventName = d.event || 'SMOKE_ALERT';\nmsg.severity  = d.severity || 'CRITICAL';\nmsg.ppm       = Number(d.ppm !== undefined ? d.ppm : (d.mq2_ppm || 0));\nmsg.threshold = Number(d.threshold || 400);\nmsg.uptime    = d.uptime_s !== undefined ? d.uptime_s : d.uptime_sec;\n\n// Dedup cache TTL 5s\nif (msg.uptime !== undefined) {\n  const now = Date.now(), cache = flow.get('dedup') || {};\n  for (const k in cache) {\n    if (now - cache[k] > 5000) delete cache[k];\n  }\n  const key = msg.deviceId + '|' + msg.eventType + '|' + (msg.eventName || '') + '|' + msg.uptime;\n  if (cache[key]) return null;\n  cache[key] = now;\n  flow.set('dedup', cache);\n}\n\nreturn msg;\n",
+    "outputs": 1,
+    "x": 520,
+    "y": 300,
+    "wires": [
+      [
+        "fn_core_fsm_engine"
+      ]
+    ]
+  },
+  {
+    "id": "fn_parse_history_sync",
+    "type": "function",
+    "z": "tab_middleware_smoke",
+    "name": "Parse Offline Buffer Sync (Abnormal 2)",
+    "func": "let data = msg.payload;\nif (typeof data === 'string') {\n    try { data = JSON.parse(data); } catch(e) { return null; }\n}\n\nmsg.eventType = \"OFFLINE_SYNC\";\nmsg.deviceId = data.device_id || \"ESP32_SMOKE_N09_A01\";\nmsg.syncSeq = data.sync_seq || 1;\nmsg.records = data.records || [];\nmsg.ppm = parseFloat(data.mq2_ppm || data.ppm || 0);\nmsg.temp = parseFloat(data.temp || 28.0);\nmsg.fan = data.fan || \"OFF\";\nmsg.recordState = data.state || \"SAFE\";\nmsg.timestamp = Date.now();\n\nreturn msg;",
+    "outputs": 1,
+    "x": 540,
+    "y": 400,
+    "wires": [
+      [
+        "fn_core_fsm_engine"
+      ]
+    ]
+  },
+  {
+    "id": "fn_parse_keepalive",
+    "type": "function",
+    "z": "tab_middleware_smoke",
+    "name": "Dịch vụ 4: Parse Keep-Alive",
+    "func": "// nodered/functions/parse_keepalive.js\nlet d = msg.payload;\nif (typeof d === 'string') {\n  try {\n    d = JSON.parse(d);\n  } catch (e) {\n    return null;\n  }\n}\nif (!d || typeof d !== 'object') return null;\n\nmsg.eventType = 'KEEP_ALIVE';\nmsg.deviceId  = d.device_id || 'ESP32_SMOKE_N09_A01';\nmsg.uptime    = d.uptime_s !== undefined ? d.uptime_s : d.uptime_sec;\nmsg.freeHeap  = Number(d.free_heap_bytes || 0);\nmsg.wifiRssi  = Number(d.wifi_rssi_dbm || -60);\nmsg.status    = d.status || 'HEALTHY';\nmsg.fsmState  = d.fsm_state;\n\n// Dedup cache TTL 5s\nif (msg.uptime !== undefined) {\n  const now = Date.now(), cache = flow.get('dedup') || {};\n  for (const k in cache) {\n    if (now - cache[k] > 5000) delete cache[k];\n  }\n  const key = msg.deviceId + '|' + msg.eventType + '|' + msg.uptime;\n  if (cache[key]) return null;\n  cache[key] = now;\n  flow.set('dedup', cache);\n}\n\nreturn msg;\n",
+    "outputs": 1,
+    "x": 520,
+    "y": 480,
+    "wires": [
+      [
+        "fn_core_fsm_engine"
+      ]
+    ]
+  },
+  {
+    "id": "fn_parse_lwt",
+    "type": "function",
+    "z": "tab_middleware_smoke",
+    "name": "Parse LWT Signal",
+    "func": "// functions/parse_lwt.js\nlet s = msg.payload;\nlet id = null;\nlet online = false;\n\ntry {\n  const j = typeof s === 'string' ? JSON.parse(s) : s;\n  if (j && typeof j === 'object') {\n    id = j.device_id;\n    online = String(j.status).toLowerCase() === 'online';\n  } else {\n    online = String(s).trim().toLowerCase() === 'online';\n  }\n} catch (e) {\n  online = String(s).trim().toLowerCase() === 'online';\n}\n\nmsg.eventType = 'LWT';\nmsg.deviceId  = id || 'ESP32_SMOKE_N09_A01';\nmsg.isOnline  = online;\n\nreturn msg;\n",
+    "outputs": 1,
+    "x": 500,
+    "y": 560,
+    "wires": [
+      [
+        "fn_core_fsm_engine"
+      ]
+    ]
+  },
+  {
+    "id": "fn_parse_scheduler",
+    "type": "function",
+    "z": "tab_middleware_smoke",
+    "name": "Parse Scheduler Cmd (Rule 3)",
+    "func": "let data = msg.payload;\nif (typeof data === 'string') {\n    try { data = JSON.parse(data); } catch(e) { data = { mode: data }; }\n}\nmsg.eventType = \"SCHEDULER_CMD\";\nmsg.mode = data.mode || \"DAY\";\nmsg.timestamp = Date.now();\nreturn msg;",
+    "outputs": 1,
+    "x": 530,
+    "y": 620,
+    "wires": [
+      [
+        "fn_core_fsm_engine"
+      ]
+    ]
+  },
+  {
+    "id": "fn_parse_fault_injection",
+    "type": "function",
+    "z": "tab_middleware_smoke",
+    "name": "Parse Fault Injection (Abnormal Sandbox)",
+    "func": "let data = msg.payload;\nif (typeof data === 'string') {\n    try { data = JSON.parse(data); } catch(e) { data = { fault: data }; }\n}\nmsg.eventType = \"FAULT_INJECTION_CMD\";\nmsg.fault = data.fault || \"NONE\";\nmsg.timestamp = Date.now();\nreturn msg;",
+    "outputs": 1,
+    "x": 550,
+    "y": 670,
+    "wires": [
+      [
+        "fn_core_fsm_engine"
+      ]
+    ]
+  },
+  {
+    "id": "fn_watchdog_scheduler",
+    "type": "function",
+    "z": "tab_middleware_smoke",
+    "name": "Watchdog 3s Tick Trigger",
+    "func": "msg.eventType = \"WATCHDOG_TICK\";\nmsg.timestamp = Date.now();\nreturn msg;",
+    "outputs": 1,
+    "x": 520,
+    "y": 720,
+    "wires": [
+      [
+        "fn_core_fsm_engine"
+      ]
+    ]
+  },
+  {
+    "id": "inject_scheduler_1m",
+    "type": "inject",
+    "z": "tab_middleware_smoke",
+    "name": "Scheduler 1-min Inject (Rule 3)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "60",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 2,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 170,
+    "y": 760,
+    "wires": [
+      [
+        "fn_scheduler_tick"
+      ]
+    ]
+  },
+  {
+    "id": "fn_scheduler_tick",
+    "type": "function",
+    "z": "tab_middleware_smoke",
+    "name": "Day/Night Scheduler Tick",
+    "func": "// functions/scheduler_tick.js\nconst h = new Date().getHours();\nconst night = h >= 22 || h < 6;\n\nif (flow.get('sched') === night) return null;\n\nflow.set('sched', night);\nreturn {\n  topic: 'Nhom09/smoke/cmd/scheduler',\n  payload: JSON.stringify({ mode: night ? 'NIGHT' : 'DAY', source: 'RULE_3_SCHEDULER' })\n};\n",
+    "outputs": 1,
+    "x": 520,
+    "y": 760,
+    "wires": [
+      [
+        "fn_command_dispatcher",
+        "fn_parse_scheduler"
+      ]
+    ]
+  },
+  {
+    "id": "fn_core_fsm_engine",
+    "type": "function",
+    "z": "tab_middleware_smoke",
+    "name": "Core Engine: FSM, 5 Rules & Abnormal Scenarios",
+    "func": "// functions/core_engine.js  (4 output: lenh, log, fleet, thong bao)\nconst NOW = Date.now();\nconst FLOOR = 'F03', CROSS_PPM = 600, CROSS_RATE_MS = 60000, WATCHDOG_MS = 30000, ALERT_RATE_MS = 20000;\nconst fleet = flow.get('fleet') || {};\nconst cmds = [], logs = [];\nlet alert = null;\n\nconst dev = id => {\n  let d = fleet[id];\n  if (!d) {\n    d = fleet[id] = {\n      deviceId: id,\n      status: 'UNKNOWN',\n      deviceState: 'SAFE',\n      effective: 'SAFE',\n      lastSeen: 0,\n      ppm: NaN,\n      temp: NaN,\n      rate: 0,\n      lastPpm: 0,\n      hum: 60.0,\n      tempHist: [],\n      alarmTh: 400,\n      safeTh: 300,\n      overActive: false,\n      hotActive: false,\n      cooldownStart: null,\n      lastAlert: 0,\n      topology: null,\n      mq2Valid: true,\n      dhtValid: true\n    };\n  }\n  if (d.rate === undefined) d.rate = 0;\n  if (!Array.isArray(d.tempHist)) d.tempHist = [];\n  return d;\n};\n\nconst log = (level, event, desc, id) => logs.push({ level, event, desc, deviceId: id, ts: NOW });\n\nconst topicOf = (d, kind) => (d.topology && d.topology.building && d.topology.floor && d.topology.room)\n  ? `Nhom09/smoke/v2/${d.topology.building}/${d.topology.floor}/${d.topology.room}/${d.deviceId}/cmd/${kind}`\n  : `Nhom09/smoke/cmd/${kind}`;\n\nconst cmd = (d, kind, payload) => ({ topic: topicOf(d, kind), payload });\n\nconst notify = (d, text) => {\n  if (NOW - d.lastAlert > ALERT_RATE_MS) {\n    d.lastAlert = NOW;\n    alert = { deviceId: d.deviceId, text };\n  }\n};\n\nswitch (msg.eventType) {\n  case 'TELEMETRY': {\n    const d = dev(msg.deviceId);\n    d.lastSeen = NOW;\n    d.status = 'ONLINE';\n    d.deviceState = msg.fsmState || d.deviceState;\n    if (Number.isFinite(msg.hum)) d.hum = msg.hum;\n    d.alarmTh = msg.alarmTh || d.alarmTh;\n    d.safeTh = msg.safeTh || d.safeTh;\n    d.mq2Valid = msg.mq2Valid;\n    d.dhtValid = msg.dhtValid;\n    d.cooldownStart = d.deviceState === 'COOLDOWN' ? (d.cooldownStart || NOW) : null;\n\n    // Rule 1: dT/dt theo cua so; mau cu nhat co tuoi >= 20 s trong 60 s; giu rate giua cac lan tinh\n    if (d.dhtValid && Number.isFinite(msg.temp)) {\n      d.temp = msg.temp;\n      d.tempHist.push({ t: NOW, v: msg.temp });\n      d.tempHist = d.tempHist.filter(s => NOW - s.t <= 60000);\n      const ref = d.tempHist.find(s => NOW - s.t >= 20000);\n      if (ref) d.rate = (msg.temp - ref.v) / ((NOW - ref.t) / 60000);\n    } else {\n      d.rate = 0;\n    }\n\n    d.effective = d.deviceState;\n    if (!d.mq2Valid || !Number.isFinite(msg.ppm)) {\n      if (d.deviceState !== 'ALARM') d.effective = 'FAULT'; // khong dung PPM cua cam bien hong\n    } else {\n      d.ppm = msg.ppm;\n      const over = msg.ppm >= d.alarmTh;\n      const hot = d.rate >= 3.0 || msg.temp >= 50.0;\n      if (over) {\n        d.effective = 'ALARM'; // chi leo thang\n        if (!d.overActive) { // canh vuot nguong\n          d.overActive = true;\n          cmds.push(cmd(d, 'fan', { action: 'ON', reason: hot ? 'RULE_1_REAL_FIRE' : 'RULE_2_LOW_HEAT_SMOKE', priority: 'CRITICAL' }));\n          log(hot ? 'CRITICAL' : 'WARN', hot ? 'REAL_FIRE_CONFIRMED' : 'SMOKE_LOW_HEAT_ALARM',\n              `PPM=${msg.ppm} dT/dt=${d.rate.toFixed(1)} T=${msg.temp}`, d.deviceId);\n          notify(d, `Khoi ${msg.ppm} PPM, nhiet ${msg.temp} C, dT/dt ${d.rate.toFixed(1)}`);\n        }\n        if (hot && !d.hotActive) {\n          d.hotActive = true;\n          cmds.push(cmd(d, 'buzzer', { action: 'UNMUTE', reason: 'RULE_1_REAL_FIRE', priority: 'CRITICAL' }));\n        }\n      } else if (msg.ppm <= d.safeTh) {\n        d.overActive = false;\n        d.hotActive = false;\n      }\n\n      // Rule 5: canh vuot 600 PPM, gioi han 60 s, chi gui toi thiet bi cung tang co topic hop le\n      if (msg.ppm >= CROSS_PPM && d.lastPpm < CROSS_PPM && NOW - (flow.get('last_cross_zone') || 0) > CROSS_RATE_MS) {\n        flow.set('last_cross_zone', NOW);\n        log('CRITICAL', 'CROSS_ZONE_BROADCAST', `PPM=${msg.ppm} tai ${d.deviceId}: so tan tang ${FLOOR}`, d.deviceId);\n        Object.values(fleet)\n          .filter(x => x.deviceId !== d.deviceId && x.topology && x.topology.floor === FLOOR && x.topology.building && x.topology.room)\n          .forEach(x => cmds.push(cmd(x, 'buzzer', { cmd_id: 'CMD-ZONE-EVACUATION', action: 'UNMUTE', priority: 'CRITICAL' })));\n      }\n      d.lastPpm = msg.ppm;\n    }\n    break;\n  }\n  case 'KEEP_ALIVE': {\n    const d = dev(msg.deviceId);\n    d.lastSeen = NOW;\n    if (d.status !== 'ONLINE') d.status = 'ONLINE';\n    break;\n  }\n  case 'LWT': {\n    const d = dev(msg.deviceId);\n    if (!msg.isOnline) {\n      d.status = 'OFFLINE';\n      d.effective = 'OFFLINE';\n      log('CRITICAL', 'LWT_DISCONNECT', 'Broker bao thiet bi mat ket noi', d.deviceId);\n      notify(d, 'Thiet bi mat ket noi (LWT)');\n    } else {\n      d.status = 'ONLINE';\n      d.lastSeen = NOW;\n      log('INFO', 'LWT_CONNECT', 'Thiet bi ket noi lai', d.deviceId);\n    }\n    break;\n  }\n  case 'WATCHDOG_TICK':\n    Object.values(fleet).forEach(d => {\n      if (d.status === 'ONLINE' && d.lastSeen && NOW - d.lastSeen > WATCHDOG_MS) {\n        d.status = 'OFFLINE';\n        d.effective = 'OFFLINE';\n        log('CRITICAL', 'WATCHDOG_TIMEOUT', 'Qua 30 s khong co du lieu', d.deviceId);\n        notify(d, 'Thiet bi im lang qua 30 s');\n      }\n    });\n    break;\n  case 'ALARM_EVENT': {\n    const d = dev(msg.deviceId);\n    log('CRITICAL', msg.eventName || 'ALARM_EVENT', 'Su kien tu thiet bi', d.deviceId);\n    break;\n  }\n  case 'OFFLINE_SYNC': {\n    const d = dev(msg.deviceId);\n    const count = Array.isArray(msg.records) ? msg.records.length : 1;\n    log('INFO', 'OFFLINE_SYNC_RECEIVED', `Dong bo ${count} ban ghi lich su tu thiet bi`, d.deviceId);\n    break;\n  }\n  case 'SCHEDULER_CMD': {\n    const mode = msg.mode || (msg.payload && msg.payload.mode) || 'DAY';\n    const alarmVal = mode === 'NIGHT' ? 350 : 400;\n    const safeVal = alarmVal * 0.75;\n    Object.values(fleet).forEach(d => {\n      d.alarmTh = alarmVal;\n      d.safeTh = safeVal;\n    });\n    log('INFO', 'SCHEDULER_APPLIED', `Lich ${mode}: alarm=${alarmVal}, safe=${safeVal}`, 'ALL');\n    break;\n  }\n  case 'FAULT_INJECTION_CMD':\n    log('INFO', 'FAULT_INJECTION_SEEN', 'Chi ghi nhan; trang thai lay tu telemetry thiet bi', msg.deviceId || 'ESP32_SMOKE_N09_A01');\n    break;\n}\n\nflow.set('fleet', fleet);\nif (logs.length) flow.set('history', logs.concat(flow.get('history') || []).slice(0, 80));\n\nconst primary = fleet['ESP32_SMOKE_N09_A01'] || Object.values(fleet)[0] || {};\n\nreturn [\n  cmds.length ? cmds.map(c => ({ topic: c.topic, payload: JSON.stringify(c.payload), qos: 1 })) : null,\n  logs.length ? { payload: logs } : null,\n  {\n    payload: {\n      fleet: Object.values(fleet),\n      fleetList: Object.values(fleet),\n      ppm: primary.ppm,\n      temp: primary.temp,\n      hum: (primary.hum !== undefined && Number.isFinite(primary.hum)) ? primary.hum : 60.0,\n      fsmState: primary.effective,\n      state: primary.effective,\n      alarmThreshold: primary.alarmTh,\n      safeThreshold: primary.safeTh\n    }\n  },\n  alert ? { payload: alert } : null\n];\n",
+    "outputs": 4,
+    "noerr": 0,
+    "x": 860,
+    "y": 420,
+    "wires": [
+      [
+        "fn_command_dispatcher"
+      ],
+      [
+        "fn_audit_logger"
+      ],
+      [
+        "fn_ui_dashboard_adapter"
+      ],
+      [
+        "fn_alert_dispatcher"
+      ]
+    ]
+  },
+  {
+    "id": "fn_command_dispatcher",
+    "type": "function",
+    "z": "tab_middleware_smoke",
+    "name": "Dịch vụ 3: Command Dispatcher (3a)",
+    "func": "// functions/command_dispatcher.js\nif (typeof msg.topic !== 'string' || /[+#]/.test(msg.topic)) {\n  node.warn('Bo qua topic khong hop le: ' + msg.topic);\n  return null;\n}\nreturn msg;\n",
+    "outputs": 1,
+    "x": 1140,
+    "y": 380,
+    "wires": [
+      [
+        "mqtt_out_cmd_downlink",
+        "debug_cmd_sent"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_out_cmd_downlink",
+    "type": "mqtt out",
+    "z": "tab_middleware_smoke",
+    "name": "Pub: Command Downlink (Dynamic msg.topic)",
+    "topic": "",
+    "qos": "1",
+    "retain": "false",
+    "broker": "broker_emqx_cloud",
+    "x": 1410,
+    "y": 440,
+    "wires": []
+  },
+  {
+    "id": "fn_alert_dispatcher",
+    "type": "function",
+    "z": "tab_middleware_smoke",
+    "name": "Alert & Telegram Dispatcher",
+    "func": "// functions/alert_dispatcher.js (output 1 -> http request, output 2 -> dashboard + debug)\nconst token = env.get('TELEGRAM_TOKEN');\nconst chat = env.get('TELEGRAM_CHAT_ID');\nconst text = '[' + msg.payload.deviceId + '] ' + msg.payload.text;\n\nif (!token || !chat) {\n  return [null, { payload: text }];\n}\n\nreturn [\n  {\n    method: 'POST',\n    url: 'https://api.telegram.org/bot' + token + '/sendMessage',\n    headers: { 'content-type': 'application/json' },\n    payload: JSON.stringify({ chat_id: chat, text: text })\n  },\n  { payload: text }\n];\n",
+    "outputs": 2,
+    "x": 1080,
+    "y": 660,
+    "wires": [
+      [
+        "http_req_telegram"
+      ],
+      [
+        "debug_alert_notifications"
+      ]
+    ]
+  },
+  {
+    "id": "http_req_telegram",
+    "type": "http request",
+    "z": "tab_middleware_smoke",
+    "name": "Telegram Bot API (Simulated/Real)",
+    "method": "use",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 1330,
+    "y": 640,
+    "wires": [
+      [
+        "debug_alert_notifications"
+      ]
+    ]
+  },
+  {
+    "id": "debug_cmd_sent",
+    "type": "debug",
+    "z": "tab_middleware_smoke",
+    "name": "Command Sent Log",
+    "active": true,
+    "tosidebar": true,
+    "complete": "payload",
+    "x": 1390,
+    "y": 560,
+    "wires": []
+  },
+  {
+    "id": "fn_audit_logger",
+    "type": "function",
+    "z": "tab_middleware_smoke",
+    "name": "Multi-tier Audit Trail Logger",
+    "func": "let payload = msg.payload || [];\nlet history = msg.eventHistory || [];\nreturn [{ payload: { recentLogs: payload, history: history } }];",
+    "outputs": 1,
+    "x": 1140,
+    "y": 280,
+    "wires": [
+      [
+        "debug_audit_log"
+      ]
+    ]
+  },
+  {
+    "id": "debug_audit_log",
+    "type": "debug",
+    "z": "tab_middleware_smoke",
+    "name": "Audit Trail Console",
+    "active": true,
+    "tosidebar": true,
+    "complete": "payload",
+    "x": 1390,
+    "y": 280,
+    "wires": []
+  },
+  {
+    "id": "fn_ui_dashboard_adapter",
+    "type": "function",
+    "z": "tab_middleware_smoke",
+    "name": "Dashboard State Adapter",
+    "func": "let p = msg.payload || {};\nlet ppm = (p.ppm !== undefined) ? Number(Number(p.ppm).toFixed(1)) : (p.smokePpm !== undefined ? Number(Number(p.smokePpm).toFixed(1)) : 0);\nlet temp = (p.temp !== undefined) ? Number(Number(p.temp).toFixed(1)) : 28.0;\nlet hum = (p.hum !== undefined) ? Number(Number(p.hum).toFixed(1)) : 60.0;\nlet state = p.fsmState || \"SAFE\";\n\nlet colorMap = {\n    \"SAFE\": \"#00b500\",\n    \"WARNING\": \"#e67e22\",\n    \"ALARM\": \"#ca3838\",\n    \"COOLDOWN\": \"#2980b9\",\n    \"FAULT\": \"#8e44ad\",\n    \"OFFLINE\": \"#7f8c8d\"\n};\nlet stateColor = colorMap[state] || \"#00b500\";\n\nlet msgPpm = { payload: ppm, topic: \"Nồng độ Khói (PPM)\" };\nlet msgTemp = { payload: temp, topic: \"Nhiệt độ (°C)\" };\nlet msgHum = { payload: hum, topic: \"Độ ẩm (%)\" };\nlet msgState = { payload: state, color: stateColor };\nlet msgDebug = { payload: p };\n\nreturn [msgPpm, msgTemp, msgHum, msgState, msgDebug];",
+    "outputs": 5,
+    "noerr": 0,
+    "x": 1130,
+    "y": 620,
+    "wires": [
+      [
+        "ui_gauge_smoke",
+        "ui_chart_trends"
+      ],
+      [
+        "ui_gauge_temp",
+        "ui_chart_trends"
+      ],
+      [
+        "ui_gauge_hum"
+      ],
+      [
+        "ui_text_fsm_state"
+      ],
+      [
+        "debug_dashboard_state"
+      ]
+    ]
+  },
+  {
+    "id": "debug_dashboard_state",
+    "type": "debug",
+    "z": "tab_middleware_smoke",
+    "name": "Dashboard UI Feed",
+    "active": true,
+    "tosidebar": true,
+    "complete": "payload",
+    "x": 1380,
+    "y": 620,
+    "wires": []
+  },
+  {
+    "id": "debug_alert_notifications",
+    "type": "debug",
+    "z": "tab_middleware_smoke",
+    "name": "Telegram & Web Alert Dispatcher",
+    "active": true,
+    "tosidebar": true,
+    "complete": "payload",
+    "x": 1160,
+    "y": 700,
+    "wires": []
+  },
+  {
+    "id": "ui_tab_smoke_monitor",
+    "type": "ui_tab",
+    "name": "Báo Khói Cảnh Báo Sớm - Tuần 7",
+    "icon": "dashboard",
+    "order": 1
+  },
+  {
+    "id": "ui_grp_gauges",
+    "type": "ui_group",
+    "name": "Thông số Cảm biến Môi trường",
+    "tab": "ui_tab_smoke_monitor",
+    "order": 1,
+    "disp": true,
+    "width": "12"
+  },
+  {
+    "id": "ui_grp_state",
+    "type": "ui_group",
+    "name": "Máy trạng thái FSM 6 Trạng thái & Tuần 7 Rules",
+    "tab": "ui_tab_smoke_monitor",
+    "order": 2,
+    "disp": true,
+    "width": "12"
+  },
+  {
+    "id": "ui_grp_controls",
+    "type": "ui_group",
+    "name": "Tầng 4: Điều khiển Chấp hành & Cảnh báo từ xa",
+    "tab": "ui_tab_smoke_monitor",
+    "order": 3,
+    "disp": true,
+    "width": "12"
+  },
+  {
+    "id": "ui_grp_fleet",
+    "type": "ui_group",
+    "name": "Quản trị Hạm đội Thiết bị (Fleet Registry)",
+    "tab": "ui_tab_smoke_monitor",
+    "order": 4,
+    "disp": true,
+    "width": "12"
+  },
+  {
+    "id": "ui_grp_rules",
+    "type": "ui_group",
+    "name": "Bảng Điều phối Business Rules & Abnormal Sandbox",
+    "tab": "ui_tab_smoke_monitor",
+    "order": 5,
+    "disp": true,
+    "width": "12"
+  },
+  {
+    "id": "ui_gauge_smoke",
+    "type": "ui_gauge",
+    "z": "tab_middleware_smoke",
+    "name": "Smoke PPM Gauge",
+    "group": "ui_grp_gauges",
+    "order": 1,
+    "width": 4,
+    "height": 4,
+    "gtype": "gage",
+    "title": "Nồng độ Khói (MQ-2)",
+    "label": "PPM",
+    "format": "{{value}}",
+    "min": 0,
+    "max": "1000",
+    "colors": [
+      "#00b500",
+      "#e6e600",
+      "#ca3838"
+    ],
+    "seg1": "300",
+    "seg2": "400",
+    "diff": false,
+    "className": "",
+    "x": 1410,
+    "y": 620,
+    "wires": []
+  },
+  {
+    "id": "ui_gauge_temp",
+    "type": "ui_gauge",
+    "z": "tab_middleware_smoke",
+    "name": "Temperature Gauge",
+    "group": "ui_grp_gauges",
+    "order": 2,
+    "width": 4,
+    "height": 4,
+    "gtype": "gage",
+    "title": "Nhiệt độ (DHT22)",
+    "label": "°C",
+    "format": "{{value}}",
+    "min": 0,
+    "max": "80",
+    "colors": [
+      "#00b500",
+      "#e6e600",
+      "#ca3838"
+    ],
+    "seg1": "35",
+    "seg2": "50",
+    "diff": false,
+    "className": "",
+    "x": 1410,
+    "y": 680,
+    "wires": []
+  },
+  {
+    "id": "ui_gauge_hum",
+    "type": "ui_gauge",
+    "z": "tab_middleware_smoke",
+    "name": "Humidity Gauge",
+    "group": "ui_grp_gauges",
+    "order": 3,
+    "width": 4,
+    "height": 4,
+    "gtype": "gage",
+    "title": "Độ ẩm Không khí",
+    "label": "%",
+    "format": "{{value}}",
+    "min": 0,
+    "max": "100",
+    "colors": [
+      "#2ca02c",
+      "#1f77b4",
+      "#0094ce"
+    ],
+    "seg1": "",
+    "seg2": "",
+    "diff": false,
+    "className": "",
+    "x": 1410,
+    "y": 740,
+    "wires": []
+  },
+  {
+    "id": "ui_chart_trends",
+    "type": "ui_chart",
+    "z": "tab_middleware_smoke",
+    "name": "Realtime Trends Chart",
+    "group": "ui_grp_gauges",
+    "order": 4,
+    "width": 12,
+    "height": 6,
+    "label": "Biểu đồ Thời gian thực Khói (PPM) & Nhiệt độ (°C)",
+    "chartType": "line",
+    "legend": "true",
+    "xformat": "HH:mm:ss",
+    "interpolate": "linear",
+    "nodata": "Đang nhận dữ liệu từ ESP32...",
+    "dot": false,
+    "ymin": "0",
+    "ymax": "",
+    "removeOlder": 1,
+    "removeOlderPoints": "",
+    "removeOlderUnit": "3600",
+    "cutout": 0,
+    "useOneColor": false,
+    "useUTC": false,
+    "colors": [
+      "#ca3838",
+      "#ff7f0e",
+      "#1f77b4",
+      "#2ca02c",
+      "#98df8a",
+      "#d62728",
+      "#ff9896",
+      "#9467bd",
+      "#c5b0d5"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "x": 1410,
+    "y": 800,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "ui_text_fsm_state",
+    "type": "ui_text",
+    "z": "tab_middleware_smoke",
+    "group": "ui_grp_state",
+    "order": 1,
+    "width": 12,
+    "height": 2,
+    "name": "FSM State Display",
+    "label": "Trạng thái FSM Hệ thống:",
+    "format": "<b><span style='color: {{msg.color}}; font-size: 22px; text-transform: uppercase;'>{{msg.payload}}</span></b>",
+    "layout": "row-spread",
+    "className": "",
+    "x": 1410,
+    "y": 860,
+    "wires": []
+  },
+  {
+    "id": "ui_btn_fan_on",
+    "type": "ui_button",
+    "z": "tab_middleware_smoke",
+    "name": "Button Fan ON",
+    "group": "ui_grp_controls",
+    "order": 1,
+    "width": 3,
+    "height": 1,
+    "passthru": false,
+    "label": "BẬT QUẠT HÚT",
+    "tooltip": "Kích hoạt quạt hút khói",
+    "color": "#ffffff",
+    "bgcolor": "#27ae60",
+    "className": "",
+    "icon": "fa-fan",
+    "payload": "{\"action\":\"ON\",\"source\":\"NodeRED_Dashboard\"}",
+    "payloadType": "str",
+    "topic": "Nhom09/smoke/cmd/fan",
+    "topicType": "str",
+    "x": 1130,
+    "y": 920,
+    "wires": [
+      [
+        "fn_command_dispatcher"
+      ]
+    ]
+  },
+  {
+    "id": "ui_btn_fan_off",
+    "type": "ui_button",
+    "z": "tab_middleware_smoke",
+    "name": "Button Fan OFF",
+    "group": "ui_grp_controls",
+    "order": 2,
+    "width": 3,
+    "height": 1,
+    "passthru": false,
+    "label": "TẮT QUẠT HÚT",
+    "tooltip": "Tắt quạt hút khói",
+    "color": "#ffffff",
+    "bgcolor": "#7f8c8d",
+    "className": "",
+    "icon": "fa-power-off",
+    "payload": "{\"action\":\"OFF\",\"source\":\"NodeRED_Dashboard\"}",
+    "payloadType": "str",
+    "topic": "Nhom09/smoke/cmd/fan",
+    "topicType": "str",
+    "x": 1130,
+    "y": 970,
+    "wires": [
+      [
+        "fn_command_dispatcher"
+      ]
+    ]
+  },
+  {
+    "id": "ui_btn_buzzer_mute",
+    "type": "ui_button",
+    "z": "tab_middleware_smoke",
+    "name": "Button Buzzer Mute",
+    "group": "ui_grp_controls",
+    "order": 3,
+    "width": 3,
+    "height": 1,
+    "passthru": false,
+    "label": "TẮT TIẾNG CÒI (MUTE)",
+    "tooltip": "Tạm ngắt tiếng chuông cảnh báo 3 phút",
+    "color": "#ffffff",
+    "bgcolor": "#e67e22",
+    "className": "",
+    "icon": "fa-bell-slash",
+    "payload": "{\"action\":\"MUTE\",\"source\":\"NodeRED_Dashboard\"}",
+    "payloadType": "str",
+    "topic": "Nhom09/smoke/cmd/buzzer",
+    "topicType": "str",
+    "x": 1130,
+    "y": 1020,
+    "wires": [
+      [
+        "fn_command_dispatcher"
+      ]
+    ]
+  },
+  {
+    "id": "ui_btn_buzzer_unmute",
+    "type": "ui_button",
+    "z": "tab_middleware_smoke",
+    "name": "Button Buzzer Unmute",
+    "group": "ui_grp_controls",
+    "order": 4,
+    "width": 3,
+    "height": 1,
+    "passthru": false,
+    "label": "BẬT TIẾNG CÒI (UNMUTE)",
+    "tooltip": "Kích hoạt lại còi báo động",
+    "color": "#ffffff",
+    "bgcolor": "#c0392b",
+    "className": "",
+    "icon": "fa-bell",
+    "payload": "{\"action\":\"UNMUTE\",\"source\":\"NodeRED_Dashboard\"}",
+    "payloadType": "str",
+    "topic": "Nhom09/smoke/cmd/buzzer",
+    "topicType": "str",
+    "x": 1130,
+    "y": 1070,
+    "wires": [
+      [
+        "fn_command_dispatcher"
+      ]
+    ]
+  }
+]

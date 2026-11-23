@@ -1,0 +1,209 @@
+# ==============================================================================
+# .gitignore - Dự Án IoT: Hệ Thống Báo Khói Cảnh Báo Sớm (ESP32 - MQTT - Web SCADA)
+# ==============================================================================
+# QUY TẮC QUẢN LÝ MÃ NGUỒN GITHUB:
+# - ĐƯỢC PUSH LÊN GITHUB:
+#   + Firmware ESP32: src/, lib/core/, test/test_core.cpp, platformio.ini, diagram.json, wokwi.toml, main.cpp
+#   + Web SCADA App: web/ (HTML, CSS, JS, libs)
+#   + Node-RED Engine: nodered/flows_smoke_detector.json, nodered/functions/*.js, nodered/tests/*.js
+#   + File kịch bản kiểm thử MQTTX: tests/mqttx_scenario_collection.json
+#   + Tài liệu gốc: README.md, PROJECT_CODEBASE.md, PLAN_RESOLVE_AGENT_CODE_AUDIT.md, .gitignore
+#
+# - BỊ CHẶN NGHIÊM NGẶT (KHÔNG PUSH LÊN GITHUB):
+#   + Toàn bộ tài liệu báo cáo & sơ đồ nội bộ (docs/)
+#   + Toàn bộ script Python tự động hóa & kiểm thử nội bộ (*.py, scripts/, scratch/, tools/)
+#   + Nhị phân build PlatformIO (.pio/, *.bin, *.elf, *.hex)
+#   + Thư mục runtime Node-RED cục bộ (.nodered_runtime/, flows_cred.json)
+#   + Thông tin bảo mật & Khóa riêng tư (.env, secrets.h, *.key, *.pem)
+#   + File khóa tạm thời Microsoft Office khi mở tài liệu (~$*, *.tmp)
+#   + File tài liệu văn phòng (Word, PowerPoint, Excel, PDF)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. PLATFORMIO, COMPILER & NHỊ PHÂN BIÊN DỊCH PHẦN CỨNG
+# ------------------------------------------------------------------------------
+.pio/
+.pioenvs/
+.piolibdeps/
+.clangd/
+.cache/
+.gcc-flags.json
+compile_commands.json
+*.elf
+*.bin
+*.hex
+*.map
+*.o
+*.a
+*.d
+*.sconsign*
+*.dmp
+*.core
+
+# Chỉ theo dõi mã nguồn thư viện do nhóm tự viết trong lib/core/
+lib/*
+!lib/core/
+
+# ------------------------------------------------------------------------------
+# 2. BẢO MẬT & THÔNG TIN NHẠY CẢM
+# ------------------------------------------------------------------------------
+.env
+.env.*
+*.env
+secrets.h
+credentials.h
+wifi_credentials.h
+private_config.h
+config_private.h
+private.h
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+*.token
+tokens.json
+auth.json
+service_account*.json
+
+# ------------------------------------------------------------------------------
+# 3. NODE-RED RUNTIME & CẤU HÌNH CỤC BỘ
+# ------------------------------------------------------------------------------
+.nodered_runtime/
+flows_cred.json
+flows_*_cred.json
+.config.runtime.json
+.config.nodes.json
+.sessions.json
+
+# ------------------------------------------------------------------------------
+# 4. CHẶN TOÀN BỘ SCRIPT PYTHON & BỘ CÔNG CỤ TỰ ĐỘNG HÓA NỘI BỘ
+# ------------------------------------------------------------------------------
+docs/
+scripts/
+scratch/
+tools/
+temp/
+tmp/
+*.py
+tests/*.py
+nodered/*.py
+test_docx.py
+temp_*.py
+*_temp.py
+start_system.bat
+*.ps1
+*.psm1
+*.bat
+*.cmd
+
+# ------------------------------------------------------------------------------
+# 5. CHẶN FILE BÁO CÁO, SLIDE & FILE KHÓA TẠM OFFICE
+# ------------------------------------------------------------------------------
+*.docx
+*.pptx
+*.pdf
+*.xlsx
+*.xls
+*.doc
+*.ppt
+~$*
+~$*.docx
+~$*.pptx
+~$*.xlsx
+~$*.doc
+~$*.ppt
+~$*.xls
+~*
+*.tmp
+*.bak
+*.saved
+*.auto
+BAO_CAO_NGHIEM_THU_AUDIT_V5.md
+PLAN_RESOLVE_AGENT_CODE_AUDIT.md
+PROJECT_CODEBASE.md
+
+# ------------------------------------------------------------------------------
+# 6. PYTHON BYTECACHE & MÔI TRƯỜNG ẢO
+# ------------------------------------------------------------------------------
+__pycache__/
+**/**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ------------------------------------------------------------------------------
+# 7. NHẬT KÝ KIỂM THỬ & RUNTIME TRACES
+# ------------------------------------------------------------------------------
+logs/*.log
+*.log
+*.log.*
+*.trace
+!logs/.gitkeep
+
+# ------------------------------------------------------------------------------
+# 8. CẤU HÌNH IDE & EDITOR CÁ NHÂN
+# ------------------------------------------------------------------------------
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.code-workspace
+.vs/
+*.suo
+*.user
+*.userosv
+*.sln.docstates
+.idea/
+*.iml
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+*.orig
+
+# ------------------------------------------------------------------------------
+# 9. FILE RÁC HỆ ĐIỀU HÀNH & NODE MODULES
+# ------------------------------------------------------------------------------
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+.DS_Store
+.AppleDouble
+.LSOverride
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-store/
+.parcel-cache/
